@@ -5,18 +5,19 @@ import time
 from http import HTTPStatus
 
 import requests
+import telegram
 from dotenv import load_dotenv
 from telegram import Bot
 
 from exceptions import (
-    CheckTokenException,
-    ConnectionErrorException,
-    ErrorException,
-    HTTPErrorException,
-    IndexErrorException,
-    KeyErrorException,
-    SendMessageException,
-    StatusErrorException,
+    CheckTokenError,
+    ConnectionMissingError,
+    HTTPFailError,
+    IndexMissingError,
+    KeyMissingError,
+    UnexpectedStatusError,
+    UnexpectedTypeError,
+    UnknownError,
 )
 
 load_dotenv()
@@ -28,7 +29,6 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
-REQUEST_TIME = int(time.time())
 
 HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
@@ -40,7 +40,10 @@ HOMEWORK_VERDICTS = {
 logger = logging.getLogger(name=__name__)
 logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler(stream=sys.stdout)
-formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+formatter = logging.Formatter(
+    '%(asctime)s %(module)s %(lineno)d '
+    '%(funcName)s [%(levelname)s] %(message)s'
+)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
@@ -54,18 +57,23 @@ def check_tokens():
         'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
         'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID
     }
+    missing_tokens = []
 
-    for key in tokens:
-        if not tokens[key]:
-            raise CheckTokenException(
-                f'Отсутствует переменная окружения {key}.'
-            )
+    for key, value in tokens.items():
+        if not value:
+            missing_tokens.append(key)
 
-    if all(tokens.keys()):
-        logger.debug(
-            'Проверка доступности переменных окружения успешно выполнена.'
+    if missing_tokens:
+        message = (
+            f'Отсутствуют переменные окружения: '
+            f'{", ".join(missing_tokens)}.'
         )
-        return None
+        logger.critical(message)
+        raise CheckTokenError(message)
+
+    logger.debug(
+        'Проверка доступности переменных окружения успешно выполнена.'
+    )
 
 
 def send_message(bot, message):
@@ -74,16 +82,19 @@ def send_message(bot, message):
     Принимает на вход два параметра:
     экземпляр класса Bot и строку с текстом сообщения.
     """
-    logger.debug('Попытка отправить сообщение в телеграм.')
+    logger.debug('Попытка отправить сообщение в Telegram чат.')
 
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
 
-    except Exception as error:
-        raise SendMessageException(f'Ошибка {error} при отправке '
-                                   f'сообщения "{message}" в телеграмм.')
+    except telegram.error.TelegramError as error:
+        logger.error(
+            f'При отправке сообщения "{message}" в '
+            f'Telegram чат возникла ошибка: {error}.'
+        )
 
-    logger.debug(f'Бот отправил сообщение "{message}"')
+    else:
+        logger.debug(f'Бот отправил сообщение "{message}"')
 
 
 def get_api_answer(timestamp):
@@ -100,7 +111,11 @@ def get_api_answer(timestamp):
         (f'params: {PARAMS}')
     )
 
-    logger.debug('Попытка запроса')
+    logger.debug(
+        'Попытка запроса с параметрами:\n{}.'.format(
+            '; \n'.join(message_params)
+        )
+    )
 
     try:
         response = requests.get(
@@ -108,17 +123,19 @@ def get_api_answer(timestamp):
             headers=HEADERS,
             params=PARAMS
         )
+
         if response.status_code != HTTPStatus.OK:
-            raise HTTPErrorException('', message_params)
+            raise HTTPFailError(
+                f'Неудачный HTTP-запрос. '
+                f'Код ответа API: {response.status_code}.'
+            )
 
-    except HTTPErrorException:
-        raise HTTPErrorException('Неудачный HTTP-запрос.', message_params)
     except requests.ConnectionError:
-        raise ConnectionErrorException('Проблема с подключением.')
+        raise ConnectionMissingError('Проблема с подключением.')
     except requests.RequestException as err:
-        raise ErrorException(f'Возникла ошибка: {err}.')
+        raise UnknownError(f'Возникла ошибка: {err}')
 
-    logger.debug('Успешный запрос')
+    logger.debug('Успешный HTTP-запрос.')
 
     return response.json()
 
@@ -129,28 +146,28 @@ def check_response(response):
     В качестве параметра функция получает ответ API,
     приведенный к типам данных Python.
     """
-    global REQUEST_TIME
-
     logger.debug('Проверка ответа API.')
 
     try:
-        REQUEST_TIME = response['current_date']
-        if not isinstance(response['homeworks'], list):
-            raise TypeError
+        if (
+            not isinstance(response, dict)
+            or not isinstance(response['homeworks'], list)
+        ):
+            raise UnexpectedTypeError(
+                'В ответе API структура данных не соответствует ожиданиям.'
+            )
         homework = response['homeworks'][0]
 
     except KeyError as key_err:
-        raise KeyErrorException(
+        raise KeyMissingError(
             f'Отсутствует ключ {key_err} в ответе API.'
         )
-    except TypeError:
-        raise TypeError(
-            'В ответе API структура данных не соответствует ожиданиям.'
-        )
+    except UnexpectedTypeError as type_err:
+        raise TypeError(type_err) from type_err
     except IndexError:
-        raise IndexErrorException('Новых статусов домашней работы нет.')
+        raise IndexMissingError('Новых статусов домашней работы нет.')
     except Exception as err:
-        raise ErrorException(f'Возникла ошибка: {err}.')
+        raise UnknownError(f'Возникла ошибка: {err}')
 
     logger.debug('Ответ API успешно проверен.')
 
@@ -174,19 +191,16 @@ def parse_status(homework):
         verdict = HOMEWORK_VERDICTS.get(status)
 
         if not verdict:
-            raise StatusErrorException('', status)
+            raise UnexpectedStatusError(
+                f'Неожиданный статус домашней работы: {status}.'
+            )
 
-    except StatusErrorException:
-        raise StatusErrorException(
-            f'Неожиданный статус домашней работы: {status}',
-            status
-        )
     except KeyError as key_err:
-        raise KeyErrorException(
-            f'Отсутствует ключ {key_err} в информации о домашней работе. '
+        raise KeyMissingError(
+            f'Отсутствует ключ {key_err} в информации о домашней работе.'
         )
     except Exception as err:
-        raise ErrorException(f'Возникла ошибка: {err}.')
+        raise UnknownError(f'Возникла ошибка: {err}')
 
     logger.debug('Информация извлечена успешно.')
 
@@ -195,26 +209,21 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    try:
-        check_tokens()
-
-    except CheckTokenException as token_err:
-        logger.critical(token_err)
-        return
+    check_tokens()
 
     bot = Bot(token=TELEGRAM_TOKEN)
     last_message = ''
+    timestamp = 0
 
     while True:
         try:
-            timestamp = REQUEST_TIME
             api_answer = get_api_answer(timestamp)
+            request_time = api_answer.get('current_date')
+            timestamp = (request_time if request_time else int(time.time()))
             message = parse_status(check_response(api_answer))
 
             send_message(bot, message)
 
-        except SendMessageException as send_err:
-            logger.error(send_err)
         except Exception as error:
             logger.error(error)
             message = str(error)

@@ -65,7 +65,7 @@ def check_tokens():
 
     if missing_tokens:
         message = (
-            f'Отсутствуют переменные окружения: '
+            'Отсутствуют переменные окружения: '
             f'{", ".join(missing_tokens)}.'
         )
         logger.critical(message)
@@ -105,28 +105,25 @@ def get_api_answer(timestamp):
     приведенный из формата JSON к типам данных Python.
     """
     PARAMS = {'from_date': timestamp}
-    message_params = (
-        (f'URL: {ENDPOINT}'),
-        (f'headers: {HEADERS}'),
-        (f'params: {PARAMS}')
-    )
+    message_params = {
+        'url': ENDPOINT,
+        'headers': HEADERS,
+        'params': PARAMS
+    }
 
     logger.debug(
-        'Попытка запроса с параметрами:\n{}.'.format(
-            '; \n'.join(message_params)
-        )
+        'Попытка запроса с параметрами:\n'
+        'url: {url},\n'
+        'headers: {headers},\n'
+        'params: {params}.'.format(**message_params)
     )
 
     try:
-        response = requests.get(
-            ENDPOINT,
-            headers=HEADERS,
-            params=PARAMS
-        )
+        response = requests.get(**message_params)
 
         if response.status_code != HTTPStatus.OK:
             raise HTTPFailError(
-                f'Неудачный HTTP-запрос. '
+                'Неудачный HTTP-запрос. '
                 f'Код ответа API: {response.status_code}.'
             )
 
@@ -218,8 +215,7 @@ def main():
     while True:
         try:
             api_answer = get_api_answer(timestamp)
-            request_time = api_answer.get('current_date')
-            timestamp = (request_time if request_time else int(time.time()))
+            timestamp = api_answer.get('current_date', timestamp)
             message = parse_status(check_response(api_answer))
 
             send_message(bot, message)

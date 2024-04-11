@@ -1,7 +1,6 @@
 # Проект "Telegram-bot"
 
 [![Python](https://img.shields.io/badge/-Python-464646?style=flat&logo=Python&logoColor=56C0C0&color=008080)](https://www.python.org/)
-[![python-telegram-bot](https://img.shields.io/badge/-python-telegram-bot-464646?style=flat&logo=python-telegram-bot&logoColor=56C0C0&color=008080)](https://docs.python-telegram-bot.org/en/stable/index.html)
 
 ## Описание проекта "Telegram-bot"
 
